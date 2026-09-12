@@ -45,6 +45,13 @@ services:
       # resolved on the Docker host at compose-parse time, not inside the
       # running container).
       OTOBO_LUALATEX_BIN: /opt/texlive-mounted/usr/bin/lualatex
+      # lualatex/luahbtex is dynamically linked against libtexlua53,
+      # libkpathsea, libptexenc, etc. These are copied by the provider
+      # image's entrypoint.sh into a stable, architecture-independent
+      # path, which we point the dynamic linker at here. This is a
+      # literal value, not a "${LD_LIBRARY_PATH}" reference, so it is
+      # not affected by the PATH-interpolation caveat noted above.
+      LD_LIBRARY_PATH: /opt/texlive-mounted/usr/lib/texlive-libs
       # Writable cache/format directory; lives inside the existing
       # opt_otobo volume, so no extra named volume is required.
       TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
@@ -61,7 +68,12 @@ services:
       - texlive_data:/opt/texlive-mounted:ro
     environment:
       OTOBO_LUALATEX_BIN: /opt/texlive-mounted/usr/bin/lualatex
+      LD_LIBRARY_PATH: /opt/texlive-mounted/usr/lib/texlive-libs
       TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
+      TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
+
+volumes:
+  texlive_data: {}
       TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
 
 volumes:
