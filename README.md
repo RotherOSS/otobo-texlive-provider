@@ -203,7 +203,3 @@ whenever:
 - a security update needs to be picked up from Debian,
 - the Debian base release needs to track a change in the OTOBO base image
   (see [above](#important-debian-version-must-match-the-otobo-base-image)).
-
-## License
-
-_Add your organization's license here._
