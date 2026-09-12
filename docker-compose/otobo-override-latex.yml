@@ -1,0 +1,68 @@
+# --
+# OTOBO is a web-based ticketing system for service organisations.
+# --
+# Copyright (C) 2019-2026 Rother OSS GmbH, https://otobo.io/
+# --
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later version.
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+# --
+
+# Adds LaTeX/lualatex support for OTOBO processes that generate PDF
+# documents (quotes/invoices) via LaTeX.
+#
+# TeX Live is NOT baked into the otobo image. Instead a separate, rarely
+# rebuilt provider image (see https://github.com/<your-org>/otobo-texlive-provider)
+# populates a volume with a full TeX Live installation. This keeps the
+# nightly-built otobo image small; only installations that actually need
+# LaTeX add this file to COMPOSE_FILE.
+#
+# See also README.md.
+
+services:
+
+  # Runs once, copies TeX Live into the shared volume, then exits.
+  texlive-init:
+    image: ${OTOBO_IMAGE_TEXLIVE:-rotheross/otobo-texlive-provider:latest}
+    restart: "no"
+    volumes:
+      - texlive_data:/target
+    # The provider image's entrypoint performs the copy and exits with code 0.
+
+  web:
+    depends_on:
+      texlive-init:
+        condition: service_completed_successfully
+    volumes:
+      - texlive_data:/opt/texlive-mounted:ro
+    environment:
+      # Absolute path instead of manipulating PATH (PATH set here would be
+      # resolved on the Docker host at compose-parse time, not inside the
+      # running container).
+      OTOBO_LUALATEX_BIN: /opt/texlive-mounted/usr/bin/lualatex
+      # Writable cache/format directory; lives inside the existing
+      # opt_otobo volume, so no extra named volume is required.
+      TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
+      TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
+
+  # Only needed if the process can also run asynchronously via the daemon
+  # (e.g. a Generic Agent Job or event-based ticket process), not just
+  # synchronously within a web request. Remove this block if not needed.
+  daemon:
+    depends_on:
+      texlive-init:
+        condition: service_completed_successfully
+    volumes:
+      - texlive_data:/opt/texlive-mounted:ro
+    environment:
+      OTOBO_LUALATEX_BIN: /opt/texlive-mounted/usr/bin/lualatex
+      TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
+      TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
+
+volumes:
+  texlive_data: {}
