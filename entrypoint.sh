@@ -42,8 +42,13 @@ mkdir -p "${TARGET_DIR}/usr/lib"
 cp -a /usr/bin/. "${TARGET_DIR}/usr/bin/"
 
 # TeX Live package tree and texmf trees.
-# These may not all exist depending on the installed package set, so
-# failures here are tolerated individually.
+# On current Debian TeX Live packages, the actual package data (texmf-dist)
+# lives inside /usr/share/texlive/texmf-dist - a separate top-level
+# /usr/share/texmf-dist does NOT exist. We still attempt to copy it in
+# case a future Debian release reintroduces that layout; the "|| true"
+# ensures a missing directory does not abort provisioning, but note that
+# this also means a genuine, unexpected copy failure here stays silent -
+# see the ls-R step below, which reports if nothing was found to index.
 cp -a /usr/share/texlive "${TARGET_DIR}/usr/share/" 2>/dev/null || true
 cp -a /usr/share/texmf "${TARGET_DIR}/usr/share/" 2>/dev/null || true
 cp -a /usr/share/texmf-dist "${TARGET_DIR}/usr/share/" 2>/dev/null || true
@@ -84,12 +89,21 @@ cp -a /opt/texmf-var-prebuilt/. "${TARGET_DIR}/texmf-var-prebuilt/"
 # this database - a stale or missing one causes "file/module not found"
 # errors even though the files physically exist under the mount.
 #
+# Note: on current Debian TeX Live packages, texmf-dist lives *inside*
+# /usr/share/texlive/texmf-dist, not as a separate /usr/share/texmf-dist
+# directory - the latter simply doesn't exist. Point mktexlsr at the
+# real locations instead of assuming the older, no-longer-used layout.
+#
 # If mktexlsr fails for any reason, fall back to removing ls-R entirely,
 # which forces kpathsea to fall back to a live (slower, but always
 # consistent) directory scan instead of trusting a broken database.
 echo "Regenerating ls-R filename database ..."
-if ! mktexlsr "${TARGET_DIR}/usr/share/texmf-dist" "${TARGET_DIR}/usr/share/texmf" 2>&1; then
-    echo "WARNING: mktexlsr failed - removing ls-R to force live directory scans" >&2
+LSR_TARGETS=""
+for d in "${TARGET_DIR}/usr/share/texlive" "${TARGET_DIR}/usr/share/texmf" "${TARGET_DIR}/usr/share/texmf-dist"; do
+    [ -d "$d" ] && LSR_TARGETS="${LSR_TARGETS} $d"
+done
+if [ -z "${LSR_TARGETS}" ] || ! mktexlsr ${LSR_TARGETS} 2>&1; then
+    echo "WARNING: mktexlsr failed or found nothing to index - removing ls-R to force live directory scans" >&2
     find "${TARGET_DIR}/usr/share" -name "ls-R" -delete
 fi
 
