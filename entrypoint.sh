@@ -70,10 +70,27 @@ if [ -d /etc/texmf ]; then
 fi
 
 # Pre-built lualatex.fmt and associated cache, generated at image-build
-# time (see Dockerfile). Copied read-only into the volume; TEXMFVAR/
-# TEXMFCACHE in the consuming container point here, so mktexfmt is never
-# invoked at runtime.
+# time (see Dockerfile). Copied read-only into the volume; TEXMFVAR in
+# the consuming container points here, so mktexfmt is never invoked at
+# runtime.
 mkdir -p "${TARGET_DIR}/texmf-var-prebuilt"
 cp -a /opt/texmf-var-prebuilt/. "${TARGET_DIR}/texmf-var-prebuilt/"
+
+# Regenerate the ls-R filename database against the *copied* files, so it
+# reflects the exact post-copy state instead of a stale build-time
+# snapshot. kpathsea (used both for classic file lookups like .fd files
+# and, via the "kpse lua searcher", for LuaTeX's runtime require() of Lua
+# modules such as luaotfload-main, expl3, ltluatex) relies heavily on
+# this database - a stale or missing one causes "file/module not found"
+# errors even though the files physically exist under the mount.
+#
+# If mktexlsr fails for any reason, fall back to removing ls-R entirely,
+# which forces kpathsea to fall back to a live (slower, but always
+# consistent) directory scan instead of trusting a broken database.
+echo "Regenerating ls-R filename database ..."
+if ! mktexlsr "${TARGET_DIR}/usr/share/texmf-dist" "${TARGET_DIR}/usr/share/texmf" 2>&1; then
+    echo "WARNING: mktexlsr failed - removing ls-R to force live directory scans" >&2
+    find "${TARGET_DIR}/usr/share" -name "ls-R" -delete
+fi
 
 echo "TeX Live provisioning done."
