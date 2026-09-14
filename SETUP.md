@@ -1,78 +1,84 @@
 # Setup: LaTeX/lualatex support for OTOBO (docker-compose)
 
-This adds LaTeX support (used to generate quotes/invoices) to an existing
-`otobo-docker` deployment, without changing the OTOBO web image itself.
+Adds LaTeX support (used to generate quotes/invoices) to an existing
+`otobo-docker` deployment without changing the OTOBO web image.
 
-## 1. Build and publish the provider image
+## 1. Build the provider image
 
-In the `otobo-texlive-provider` repo:
+The image is built automatically by Docker Hub from this repository
+(Automated Build). After pushing a change:
 
-```bash
-docker build -t myregistry/otobo-texlive-provider:2026.1 .
-docker push myregistry/otobo-texlive-provider:2026.1
-```
-
-Only needs to be rebuilt when the TeX Live package set changes - not on
-every OTOBO nightly build.
+- Docker Hub -> repository -> **Builds**: wait until the build for your
+  commit shows **Success**. The build takes several minutes (TeX Live
+  download + format/cache generation + smoke test).
+- Open the build log if it fails. The most common cause is a missing
+  package, which the smoke test reports as
+  `! LaTeX Error: File 'xyz.sty' not found.`
 
 ## 2. Add the override file to your otobo-docker checkout
 
-Copy `docker-compose/otobo-override-latex.yml` from this delivery into
-your `otobo-docker` checkout, into the existing `docker-compose/` folder
-(same location as `otobo-override-https.yml` etc.).
+Copy `docker-compose/otobo-override-latex.yml` into the existing
+`docker-compose/` folder of your `otobo-docker` checkout.
 
-## 3. Update your `.env`
+## 3. Update `.env`
 
-Two options:
+Append the override to `COMPOSE_FILE` and pin the image:
 
-- **Fresh setup:** copy `.docker_compose_env_https_latex` to `.env` and
-  fill in the required values (`OTOBO_DB_ROOT_PASSWORD`,
-  `OTOBO_NGINX_SSL_CERTIFICATE*`, ...), same as with any other
-  `.docker_compose_env_*` sample file.
-- **Existing setup:** in your current `.env`, append
-  `:docker-compose/otobo-override-latex.yml` to `COMPOSE_FILE`, and add:
-  ```
-  OTOBO_IMAGE_TEXLIVE=myregistry/otobo-texlive-provider:2026.1
-  ```
+```
+COMPOSE_FILE=docker-compose/otobo-base.yml:docker-compose/otobo-override-https.yml:docker-compose/otobo-override-latex.yml
+
+OTOBO_IMAGE_TEXLIVE=rotheross/otobo-texlive-provider:latest
+```
 
 ## 4. Verify the merged configuration
 
 ```bash
-docker compose config
+docker compose config | grep -A12 'texlive'
 ```
 
-Check that:
-- `texlive-init` appears as a service,
-- `web` (and `daemon`, if included) lists `texlive-init` under
-  `depends_on` with `condition: service_completed_successfully`,
-- `web`/`daemon` have the `texlive_data` volume mount and the
-  `OTOBO_LUALATEX_BIN` / `TEXMFVAR` / `TEXMFCACHE` environment variables.
+`web` (and `daemon`) must show the `texlive_data:/opt/texlive:ro` mount
+and the `OTOBO_LUALATEX_BIN` / `TEXMFVAR` environment variables.
 
-## 5. Start the environment
+## 5. Roll out (production-safe, no `down`)
 
 ```bash
-docker compose up -d
-docker compose logs texlive-init
+docker compose pull texlive-init
+docker compose up -d --force-recreate texlive-init   # repopulates the volume
+docker compose logs texlive-init                     # must end with "TeX Live provisioning done"
+docker compose up -d --force-recreate web daemon     # only needed when the env vars changed
 ```
 
-`texlive-init` should log `TeX Live provisioning done.` and then exit
-with code `0`. Confirm with:
+`web`/`daemon` see changes to the volume contents immediately; they only
+need to be recreated when the compose *definition* (mounts, environment)
+changed. `texlive-init` verifies the copied tree and exits non-zero if
+anything essential is missing, in which case `web`/`daemon` will not be
+started by `depends_on`.
+
+## 6. Verify inside the web container
 
 ```bash
-docker compose ps texlive-init
-# STATUS should show "Exited (0)"
+docker compose exec web sh -c '"$OTOBO_LUALATEX_BIN" --version | head -1'
+docker compose exec web sh -c '/opt/texlive/bin/current/kpsewhich ot1lmr.fd fontspec.sty environ.sty'
+docker compose exec web sh -c '
+  cd /tmp && printf "\\documentclass{article}\\usepackage{fontspec}\\begin{document}Hallo äöü\\end{document}" > t.tex &&
+  "$OTOBO_LUALATEX_BIN" -interaction=nonstopmode -halt-on-error t.tex >/dev/null && ls -l t.pdf'
 ```
 
-`web` and `daemon` will wait for this before starting, due to
-`condition: service_completed_successfully`.
+All three must succeed (version line, three paths, a non-empty `t.pdf`).
 
-## 6. Point the Perl code at the mounted binary
+## 7. Perl side
 
-In `_RunLuaLaTeXOnce` (or wherever `lualatex` is invoked), read the
-binary path from the environment instead of relying on `$PATH`:
+Read the binary path from the environment and make sure the writable
+cache directory exists:
 
 ```perl
 my $LuaLaTeXBin = $ENV{OTOBO_LUALATEX_BIN} || 'lualatex';
+
+if ( $LuaLaTeXBin =~ m{/} && !-x $LuaLaTeXBin ) {
+    return ( -1, '', "lualatex binary not found or not executable: $LuaLaTeXBin" );
+}
+
+File::Path::make_path( $ENV{TEXMFVAR} ) if $ENV{TEXMFVAR} && !-d $ENV{TEXMFVAR};
 
 my @Cmd = (
     $LuaLaTeXBin,
@@ -82,19 +88,15 @@ my @Cmd = (
 );
 ```
 
-## 7. Smoke test
+## 8. Test with the real templates
 
-```bash
-docker compose exec web sh -c '$OTOBO_LUALATEX_BIN --version'
-```
-
-If this prints the lualatex version, the mount and environment variables
-are wired up correctly and your process code should be able to render
-PDFs as before.
+Trigger the OTOBO process that generates a quote/invoice. The custom fonts
+are loaded via `Path=fonts/` relative to the generated `.tex` file, so the
+`fonts/` directory must exist next to it - that is independent of this
+image. The first run caches the custom fonts' glyph data under `TEXMFVAR`
+and is therefore a bit slower than subsequent runs.
 
 ## Rolling back / disabling
 
-Remove `:docker-compose/otobo-override-latex.yml` from `COMPOSE_FILE`
-(and the `OTOBO_IMAGE_TEXLIVE` line, optional) and run
-`docker compose up -d` again. `web`/`daemon` return to the plain OTOBO
-image behavior; no image rebuild required.
+Remove `:docker-compose/otobo-override-latex.yml` from `COMPOSE_FILE` and
+run `docker compose up -d`. No image rebuild required.

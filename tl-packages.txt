@@ -1,0 +1,36 @@
+# TeX Live packages installed on top of the base collections
+# (collection-basic, collection-latex, collection-luatex - see texlive.profile).
+#
+# One package name per line. Lines starting with '#' and empty lines are
+# ignored. tlmgr resolves dependencies automatically, so only list what
+# your templates actually \usepackage{} (or need indirectly).
+#
+# To find which package provides a missing .sty/.fd/.lua file:
+#   docker run --rm --entrypoint tlmgr rotheross/otobo-texlive-provider:latest \
+#       search --global --file /ot1lmr.fd
+
+# --- Fonts -----------------------------------------------------------------
+# Latin Modern: fontspec's default fallback family; provides ot1lmr.fd,
+# tulmr.fd and the lmroman*.otf files.
+lm
+
+# --- OpenType font loading (LuaLaTeX) --------------------------------------
+fontspec
+
+# --- Used directly by the OTOBO quote/invoice templates --------------------
+environ
+etoolbox
+titlesec
+
+# --- German language support ----------------------------------------------
+babel-german
+hyphen-german
+
+# --- Commonly needed in business documents (adjust to common-template.tex) --
+geometry
+fancyhdr
+xcolor
+booktabs
+lastpage
+microtype
+eurosym

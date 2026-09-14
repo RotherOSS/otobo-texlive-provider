@@ -1,205 +1,174 @@
 # otobo-texlive-provider
 
-A small, independently versioned Docker image that provisions a full
-[TeX Live](https://tug.org/texlive/) installation (including `lualatex`)
-into a Docker volume, for use by [OTOBO](https://otobo.org) containers
-that generate PDF documents (e.g. quotes and invoices) via LaTeX.
+A small, independently versioned Docker image that provisions a
+self-contained, **relocatable upstream TeX Live** installation (including
+`lualatex`) into a Docker volume, for use by [OTOBO](https://otobo.org)
+containers that generate PDF documents (e.g. quotes and invoices) via
+LaTeX.
 
 This image is intentionally **not** a variant of the OTOBO web image and
-is **not** rebuilt on the OTOBO nightly build cycle. It exists purely to
-decouple "installing TeX Live" from "building OTOBO", so that:
+is **not** rebuilt on the OTOBO nightly build cycle. It decouples
+"installing TeX Live" from "building OTOBO", so that:
 
 - the OTOBO web image stays small for the majority of installations that
   don't use LaTeX at all,
-- TeX Live is only rebuilt when it actually needs to change (new packages,
-  security updates), not every night,
+- TeX Live is only rebuilt when it actually needs to change,
 - the same provider image can be reused across any number of OTOBO
-  instances or customer deployments.
+  instances.
+
+## Why upstream TeX Live and not Debian's `texlive-*` packages?
+
+Debian's apt packages are **not relocatable**: `texmf.cnf`, kpathsea's
+compiled-in defaults, `ls-R` databases (symlinks into `/var/lib/texmf`),
+format files, shared libraries and script shebangs all hardcode absolute
+paths under `/usr`, `/var` and `/etc`. Mounting such a tree at any other
+path requires overriding one variable after another and still breaks in
+surprising places.
+
+Upstream TeX Live (installed with `install-tl` in *portable* mode) is
+designed to be moved around: every path is resolved relative to the
+binaries, `ls-R` files are plain files inside the tree, formats and
+caches live inside the tree, and the binaries depend on nothing but
+glibc/libstdc++. We install it to `/opt/texlive` and mount the volume in
+the OTOBO container at that **same path** - so there is nothing to
+relocate and nothing to override.
 
 ## How it works
 
-The image does not run TeX Live itself. Instead, its entrypoint copies
-the apt-installed TeX Live tree into a target directory (a mounted Docker
-volume) and then exits. A one-shot **init container** pattern is used in
-`docker-compose`:
-
 ```
-texlive-init (this image)  --copies-->  texlive_data (named volume)
-                                              |
-                                              v
-                                    otobo web / daemon container
-                                    (mounts texlive_data read-only)
+texlive-init (this image)  --copies /opt/texlive-->  texlive_data (volume)
+                                                            |
+                                                            v
+                                            otobo web / daemon container
+                                            mounts it read-only at /opt/texlive
 ```
 
-The OTOBO container never needs TeX Live baked in — it just mounts the
-volume that this image populated and points its LaTeX-generation code at
-the binary inside it via the `OTOBO_LUALATEX_BIN` environment variable.
+The consuming container only needs two environment variables:
 
-See the [`otobo-docker`](https://github.com/RotherOSS/otobo-docker)
-override file `docker-compose/otobo-override-latex.yml` for the full
-integration.
+| Variable             | Value                               | Purpose |
+|----------------------|-------------------------------------|---------|
+| `OTOBO_LUALATEX_BIN` | `/opt/texlive/bin/current/lualatex` | Absolute path used by the OTOBO Perl code. `bin/current` is an architecture-independent symlink (`x86_64-linux`, `aarch64-linux`, ...). |
+| `TEXMFVAR`           | `/opt/otobo/var/tmp/texlive-var`    | Writable location for luaotfload's font caches. Everything pre-built at image build time is still read from the read-only tree. |
+
+No `PATH`, `LD_LIBRARY_PATH`, `TEXMFCNF` or `TEXMF*` overrides are
+required.
 
 ## What's included
 
-Installed via `apt` on top of `debian:trixie-slim`:
+- Base: `scheme-minimal` + `collection-basic`, `collection-latex`,
+  `collection-luatex` (see `texlive.profile`)
+- Packages on top: see [`tl-packages.txt`](tl-packages.txt) - e.g. `lm`,
+  `fontspec`, `environ`, `etoolbox`, `titlesec`, `babel-german`.
+- Pre-built at image build time: `lualatex.fmt`, luaotfload's font name
+  database, and warmed caches for the Latin Modern fonts.
+- A build-time smoke test (`smoke-test.tex`) compiles a document with the
+  same package stack as the OTOBO templates. A missing package fails the
+  image build instead of a production request.
 
-| Package                        | Purpose                                   |
-|---------------------------------|--------------------------------------------|
-| `texlive-luatex`                | Provides the `lualatex` binary             |
-| `texlive-latex-recommended`     | Common LaTeX packages                      |
-| `texlive-latex-extra`           | Additional packages (e.g. `tabularx`, `etoolbox`, `environ`) |
-| `texlive-fonts-recommended`     | Standard font packages                     |
-| `texlive-lang-german`           | German hyphenation / `babel`/`polyglossia` support |
-| `lmodern`                       | Common font fix used by many templates     |
+Custom fonts used by the OTOBO templates via `\setmainfont{...}[Path=fonts/]`
+are **not** part of this image: fontspec loads them relative to the `.tex`
+file, so they ship together with the templates.
 
-Adjust the package list in the `Dockerfile` if your `.tex` templates need
-additional CTAN packages. Avoid `texlive-full` unless you actually need
-it — it adds several GB to the image for packages most templates never
-use.
+## Adding packages
 
-## Important: Debian version must match the OTOBO base image
+1. Find the package for a missing file:
+   ```bash
+   docker run --rm --entrypoint tlmgr rotheross/otobo-texlive-provider:latest \
+       search --global --file /siunitx.sty
+   ```
+2. Add the package name to `tl-packages.txt`.
+3. Optionally add a `\usepackage{...}` line to `smoke-test.tex` so the
+   build verifies it.
+4. Commit and push; Docker Hub rebuilds the image.
 
-The OTOBO web image (see
-[`otobo.web.dockerfile`](https://github.com/RotherOSS/otobo/blob/rel-11_1/otobo.web.dockerfile))
-is built `FROM perl:5.44-slim-trixie`, i.e. **Debian 13 (trixie)**. The
-binaries copied out of this image are linked against trixie's glibc and
-shared libraries.
+## Reproducible builds
 
-**This image's `FROM debian:trixie-slim` must be kept in lockstep with
-the Debian release used by the OTOBO base image.** If OTOBO ever moves to
-a newer Debian release, this image must be updated accordingly — otherwise
-the copied binaries may fail at runtime with glibc/ABI mismatches when
-mounted into the newer OTOBO container.
-
-> **Upgrade checklist:** whenever bumping the OTOBO image version, check
-> which Debian release `otobo.web.dockerfile`'s `perl:*-slim-*` base image
-> uses, and update the `FROM` line here if it changed.
-
-No other coupling to OTOBO's release cycle exists — this image doesn't
-contain Perl, CPAN modules, or any OTOBO code, and does not need to be
-rebuilt when OTOBO itself is rebuilt.
-
-## Building
-
-```bash
-docker build -t myregistry/otobo-texlive-provider:2026.1 .
-docker push myregistry/otobo-texlive-provider:2026.1
-```
-
-Tag with a meaningful version (date-based or semantic) rather than
-`latest`, and pin that tag explicitly wherever the image is consumed —
-see [Usage](#usage) below. This image is rebuilt on demand, not
-automatically, so there is no "latest" that tracks a moving target.
-
-## Usage
-
-### Standalone
-
-```bash
-docker run --rm \
-  -v texlive_data:/target \
-  myregistry/otobo-texlive-provider:2026.1
-```
-
-This populates the `texlive_data` volume and exits with code `0`.
-
-### With `otobo-docker` (recommended)
-
-Add the following to `docker-compose/otobo-override-latex.yml` in your
-[`otobo-docker`](https://github.com/RotherOSS/otobo-docker) setup:
-
-```yaml
-services:
-
-  texlive-init:
-    image: ${OTOBO_IMAGE_TEXLIVE:-myregistry/otobo-texlive-provider:2026.1}
-    restart: "no"
-    volumes:
-      - texlive_data:/target
-
-  web:
-    depends_on:
-      texlive-init:
-        condition: service_completed_successfully
-    volumes:
-      - texlive_data:/opt/texlive-mounted:ro
-    environment:
-      OTOBO_LUALATEX_BIN: /opt/texlive-mounted/usr/bin/lualatex
-      TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
-      TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
-
-volumes:
-  texlive_data: {}
-```
-
-Then add the override file to `COMPOSE_FILE` in your `.env`:
+`TL_REPO` (build arg) selects the TeX Live network repository. The
+default, `https://mirror.ctan.org/systems/texlive/tlnet`, is the *current*
+release and therefore a moving target. For production, pin it to a
+frozen snapshot, either in the Dockerfile default or via the Docker Hub
+build settings:
 
 ```
-COMPOSE_FILE=docker-compose/otobo-base.yml:docker-compose/otobo-override-https.yml:docker-compose/otobo-override-latex.yml
-
-OTOBO_IMAGE_TEXLIVE=myregistry/otobo-texlive-provider:2026.1
+# dated snapshot (any day):
+https://texlive.info/tlnet-archive/2026/09/01/tlnet
+# frozen final state of a past release:
+https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/tlnet-final
 ```
 
-Installations that don't need LaTeX simply omit this file from
-`COMPOSE_FILE` — the OTOBO web image itself is completely unaffected.
+`instopt_adjustrepo 0` in `texlive.profile` makes sure the installation
+keeps using exactly that repository afterwards.
 
-### Consuming the mounted binary from Perl code
+## Compatibility with the OTOBO image
 
-Rather than relying on `$PATH` (which is resolved on the Docker host at
-compose-file parse time, not inside the running container, and is
-therefore not a reliable way to extend the container's runtime `PATH`),
-point directly at the mounted binary via an environment variable:
+The only remaining coupling to the OTOBO base image is the C library: the
+TeX Live binaries need a glibc and libstdc++ at least as new as the ones
+they were built against. Both this image (`debian:trixie-slim`) and the
+OTOBO web image (`perl:*-slim-trixie`) are based on the same Debian
+release, so this is satisfied. If OTOBO moves to a newer Debian release,
+this image keeps working; only the reverse (OTOBO on an *older* Debian
+than this image) could be a problem.
+
+## Usage with `otobo-docker`
+
+1. Copy `docker-compose/otobo-override-latex.yml` into the
+   `docker-compose/` folder of your
+   [`otobo-docker`](https://github.com/RotherOSS/otobo-docker) checkout.
+2. Append it to `COMPOSE_FILE` in `.env` and pin the image:
+   ```
+   COMPOSE_FILE=docker-compose/otobo-base.yml:docker-compose/otobo-override-https.yml:docker-compose/otobo-override-latex.yml
+   OTOBO_IMAGE_TEXLIVE=rotheross/otobo-texlive-provider:latest
+   ```
+3. `docker compose up -d`
+
+Installations that don't need LaTeX simply omit the override file; the
+OTOBO image itself is unaffected.
+
+See [SETUP.md](SETUP.md) for the step-by-step rollout and verification.
+
+## Perl side
 
 ```perl
 my $LuaLaTeXBin = $ENV{OTOBO_LUALATEX_BIN} || 'lualatex';
 
-my @Cmd = (
-    $LuaLaTeXBin,
-    '-interaction=nonstopmode',
-    "--output-directory=$AbsOutputDir",
-    $FileName,
-);
+# luaotfload creates its cache directories itself, but creating the root
+# up front avoids relying on that.
+File::Path::make_path( $ENV{TEXMFVAR} ) if $ENV{TEXMFVAR} && !-d $ENV{TEXMFVAR};
 ```
 
-### Cache / writable directories
+## Troubleshooting
 
-`lualatex` needs a writable location for its format cache
-(`luaotfload`) and generated `.fmt` files. Since the mounted volume is
-read-only, point `TEXMFVAR` and `TEXMFCACHE` at a writable path inside
-the existing `opt_otobo` volume (already mounted by the OTOBO containers)
-rather than creating an additional named volume:
+| Symptom | Check |
+|---|---|
+| `texlive-init` exits non-zero | `docker compose logs texlive-init` - the entrypoint verifies `lualatex`, `ls-R` and `lualatex.fmt` after copying and reports which one is missing. |
+| `! LaTeX Error: File 'xyz.sty' not found.` | Package missing: see *Adding packages*. |
+| `luaotfload | db : Font names database not found` or slow first run | `TEXMFVAR` must point to a writable directory; check `docker compose exec web sh -c 'touch "$TEXMFVAR/x"'`. |
+| `error while loading shared libraries` | glibc/libstdc++ mismatch - see *Compatibility*. |
 
-```yaml
-environment:
-  TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
-  TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
-```
-
-## Verifying a merged compose configuration
-
-Before rolling this out, verify the fully merged compose configuration
-(especially `depends_on`, which mixes short-form and long-form syntax
-across files):
+Quick end-to-end check inside the running web container:
 
 ```bash
-docker compose config
+docker compose exec web sh -c '"$OTOBO_LUALATEX_BIN" --version | head -1'
+docker compose exec web sh -c '/opt/texlive/bin/current/kpsewhich ot1lmr.fd fontspec.sty'
+docker compose exec web sh -c '
+  cd /tmp && printf "\\documentclass{article}\\usepackage{fontspec}\\begin{document}Hallo äöü\\end{document}" > t.tex &&
+  "$OTOBO_LUALATEX_BIN" -interaction=nonstopmode -halt-on-error t.tex >/dev/null && ls -l t.pdf'
 ```
 
 ## Repository layout
 
 ```
 .
-├── Dockerfile        # builds the provider image
-├── entrypoint.sh     # copies TeX Live into the mounted volume, then exits
-└── README.md         # this file
+├── Dockerfile                                  # installs upstream TeX Live to /opt/texlive
+├── texlive.profile                             # install-tl profile (portable, minimal scheme)
+├── tl-packages.txt                             # packages installed on top (edit me)
+├── smoke-test.tex                              # build-time verification document
+├── entrypoint.sh                               # copies /opt/texlive into the mounted volume
+├── docker-compose/otobo-override-latex.yml     # compose override for otobo-docker
+├── SETUP.md
+└── README.md
 ```
 
-## Versioning
+## License
 
-Tags follow `<year>.<increment>` (e.g. `2026.1`, `2026.2`) and are bumped
-whenever:
-
-- the TeX Live package set changes (new packages added for a new template),
-- a security update needs to be picked up from Debian,
-- the Debian base release needs to track a change in the OTOBO base image
-  (see [above](#important-debian-version-must-match-the-otobo-base-image)).
+GNU General Public License v3 or later - see [LICENSE](LICENSE).

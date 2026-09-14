@@ -17,10 +17,12 @@
 # documents (quotes/invoices) via LaTeX.
 #
 # TeX Live is NOT baked into the otobo image. Instead a separate, rarely
-# rebuilt provider image (see https://github.com/<your-org>/otobo-texlive-provider)
-# populates a volume with a full TeX Live installation. This keeps the
-# nightly-built otobo image small; only installations that actually need
-# LaTeX add this file to COMPOSE_FILE.
+# rebuilt provider image (https://github.com/RotherOSS/otobo-texlive-provider)
+# copies a self-contained, relocatable upstream TeX Live tree into a
+# volume. The web/daemon containers mount that volume at /opt/texlive -
+# the *same* path it was built for - so no path overrides are needed.
+# This keeps the nightly-built otobo image small; only installations that
+# actually need LaTeX add this file to COMPOSE_FILE.
 #
 # See also README.md.
 
@@ -32,33 +34,23 @@ services:
     restart: "no"
     volumes:
       - texlive_data:/target
-    # The provider image's entrypoint performs the copy and exits with code 0.
 
   web:
     depends_on:
       texlive-init:
         condition: service_completed_successfully
     volumes:
-      - texlive_data:/opt/texlive-mounted:ro
+      - texlive_data:/opt/texlive:ro
     environment:
-      # Absolute path instead of manipulating PATH (PATH set here would be
-      # resolved on the Docker host at compose-parse time, not inside the
-      # running container).
-      OTOBO_LUALATEX_BIN: /opt/texlive-mounted/usr/bin/lualatex
-      # lualatex/luahbtex is dynamically linked against libtexlua53,
-      # libkpathsea, libptexenc, etc. These are copied by the provider
-      # image's entrypoint.sh into a stable, architecture-independent
-      # path, which we point the dynamic linker at here. This is a
-      # literal value, not a "${LD_LIBRARY_PATH}" reference, so it is
-      # not affected by the PATH-interpolation caveat noted above.
-      LD_LIBRARY_PATH: /opt/texlive-mounted/usr/lib/texlive-libs
-      # Writable cache/format directory; lives inside the existing
-      # opt_otobo volume, so no extra named volume is required.
-      # Points at the pre-built format file from image-build time
-      # instead of a writable runtime cache - mktexfmt is never invoked,
-      # so PATH does not need to include the mounted TeX Live bin dir.
-      TEXMFVAR: /opt/texlive-mounted/texmf-var-prebuilt
-      TEXMFCACHE: /opt/texlive-mounted/texmf-var-prebuilt
+      # Absolute path to the binary (bin/current is an architecture-
+      # independent symlink created by the provider image).
+      OTOBO_LUALATEX_BIN: /opt/texlive/bin/current/lualatex
+      # The tree is mounted read-only, but luaotfload needs a writable
+      # location for its font caches (glyph data of the custom fonts is
+      # cached on first use). Everything pre-built at image build time
+      # (lualatex.fmt, font name database) is still found in the
+      # read-only tree via TEXMFSYSVAR; this only adds a writable layer.
+      TEXMFVAR: /opt/otobo/var/tmp/texlive-var
 
   # Only needed if the process can also run asynchronously via the daemon
   # (e.g. a Generic Agent Job or event-based ticket process), not just
@@ -68,16 +60,10 @@ services:
       texlive-init:
         condition: service_completed_successfully
     volumes:
-      - texlive_data:/opt/texlive-mounted:ro
+      - texlive_data:/opt/texlive:ro
     environment:
-      OTOBO_LUALATEX_BIN: /opt/texlive-mounted/usr/bin/lualatex
-      LD_LIBRARY_PATH: /opt/texlive-mounted/usr/lib/texlive-libs
-      TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
-      TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
-
-volumes:
-  texlive_data: {}
-      TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
+      OTOBO_LUALATEX_BIN: /opt/texlive/bin/current/lualatex
+      TEXMFVAR: /opt/otobo/var/tmp/texlive-var
 
 volumes:
   texlive_data: {}

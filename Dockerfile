@@ -15,37 +15,89 @@
 
 # Dockerfile for otobo-texlive-provider.
 #
-# This image is built independently of the OTOBO nightly build cycle -
-# only rebuild it when the TeX Live version or package set should change.
+# Installs *upstream* TeX Live (via install-tl) into /opt/texlive in
+# "portable" mode. Unlike Debian's apt packages, upstream TeX Live is
+# designed to be relocatable: every path is resolved relative to the
+# location of the binaries, ls-R databases are plain files inside the
+# tree, formats and caches live inside the tree, and the binaries have
+# almost no external library dependencies. The consuming OTOBO container
+# mounts the resulting tree at the *same* path (/opt/texlive), so nothing
+# needs to be relocated or overridden at runtime.
 #
-# IMPORTANT: the Debian release below must match the Debian release used
-# by the OTOBO web image (see otobo.web.dockerfile, currently based on
-# perl:5.44-slim-trixie -> Debian 13 "trixie"). Keep this in lockstep
-# whenever OTOBO's base image changes, otherwise the binaries copied out
-# of this image may fail with glibc/ABI mismatches when mounted into a
-# newer OTOBO container. See README.md for details.
+# This image is built independently of the OTOBO nightly build cycle -
+# only rebuild it when the TeX Live version or the package set should
+# change (see tl-packages.txt).
 
 FROM debian:trixie-slim
 
+# TeX Live network repository used for install-tl and tlmgr.
+#
+# The default (mirror.ctan.org) always points at the *current* TeX Live
+# release and is a moving target. For reproducible builds, pin to a
+# frozen snapshot instead, e.g. a dated tlnet archive:
+#   https://texlive.info/tlnet-archive/2026/09/01/tlnet
+# or the frozen final state of a past release:
+#   https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2025/tlnet-final
+ARG TL_REPO=https://mirror.ctan.org/systems/texlive/tlnet
+
+ENV TEXLIVE_DIR=/opt/texlive
+
+# perl is required by install-tl and tlmgr; the rest is for downloading.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends install \
-    texlive-luatex \
-    texlive-latex-recommended \
-    texlive-latex-extra \
-    texlive-fonts-recommended \
-    texlive-lang-german \
-    lmodern \
+      perl \
+      wget \
+      ca-certificates \
+      xz-utils \
+      gnupg \
  && rm -rf /var/lib/apt/lists/*
 
-# Pre-build the lualatex format file at image-build time. fmtutil-sys
-# writes to TEXMFSYSVAR (not TEXMFVAR!) regardless of environment
-# overrides, so we let it write to its default location and then copy
-# the result from there - rather than assuming a path.
-RUN fmtutil-sys --byfmt lualatex \
- && SYS_VAR="$(kpsewhich -var-value TEXMFSYSVAR)" \
- && mkdir -p /opt/texmf-var-prebuilt \
- && cp -a "${SYS_VAR}/." /opt/texmf-var-prebuilt/ \
- && chmod -R a+rX /opt/texmf-var-prebuilt
+# Base installation according to texlive.profile (minimal scheme plus
+# the basic/latex/luatex collections, portable mode, no docs/sources).
+COPY texlive.profile /tmp/texlive.profile
+RUN set -eu; \
+    mkdir -p /tmp/install-tl; \
+    wget -qO- "${TL_REPO}/install-tl-unx.tar.gz" \
+      | tar xz -C /tmp/install-tl --strip-components=1; \
+    /tmp/install-tl/install-tl \
+      --profile=/tmp/texlive.profile \
+      --repository "${TL_REPO}"; \
+    rm -rf /tmp/install-tl /tmp/texlive.profile; \
+    # TeX Live puts binaries in an architecture-specific directory
+    # (x86_64-linux, aarch64-linux, ...). Provide a stable, architecture-
+    # independent alias so consumers never need to know the triplet.
+    ARCH_DIR="$(ls "${TEXLIVE_DIR}/bin" | head -n 1)"; \
+    ln -s "${ARCH_DIR}" "${TEXLIVE_DIR}/bin/current"
+
+ENV PATH="${TEXLIVE_DIR}/bin/current:${PATH}"
+
+# Install exactly the packages the OTOBO LaTeX templates need.
+# tlmgr resolves dependencies automatically. Edit tl-packages.txt to
+# add or remove packages - no Dockerfile change required.
+COPY tl-packages.txt /tmp/tl-packages.txt
+RUN set -eu; \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/tl-packages.txt | xargs tlmgr install; \
+    rm -f /tmp/tl-packages.txt; \
+    # Pre-build the lualatex format so mktexfmt is never needed at runtime.
+    fmtutil-sys --byfmt lualatex; \
+    # Pre-build luaotfload's font name database (scans the TeX Live fonts).
+    luaotfload-tool --update --force; \
+    # Refresh the ls-R databases of all trees (texmf-var now contains the
+    # format file; the tree is marked "!!" = ls-R-only in texmf.cnf).
+    mktexlsr
+
+# Build-time smoke test: compile a small document that uses the same
+# package stack as the OTOBO templates. This fails the image build early
+# if a package is missing, and as a side effect warms luaotfload's glyph
+# cache for the default (Latin Modern) fonts, which is then shipped
+# read-only inside the tree.
+COPY smoke-test.tex /tmp/smoke/smoke-test.tex
+RUN set -eu; \
+    cd /tmp/smoke; \
+    lualatex -interaction=nonstopmode -halt-on-error smoke-test.tex >/dev/null; \
+    test -s smoke-test.pdf; \
+    echo "smoke test OK: $(stat -c %s smoke-test.pdf) bytes"; \
+    cd /; rm -rf /tmp/smoke
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
