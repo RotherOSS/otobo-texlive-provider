@@ -37,6 +37,16 @@ RUN apt-get update \
     lmodern \
  && rm -rf /var/lib/apt/lists/*
 
+# Pre-build the lualatex format file at image-build time. This means the
+# consuming OTOBO container never needs to invoke mktexfmt/fmtutil-sys at
+# runtime - which in turn means the mounted TeX Live bin directory does
+# NOT need to be added to PATH in the OTOBO container. Only
+# OTOBO_LUALATEX_BIN, LD_LIBRARY_PATH and TEXMFCNF are still required.
+RUN mkdir -p /opt/texmf-var-prebuilt \
+ && TEXMFVAR=/opt/texmf-var-prebuilt TEXMFCACHE=/opt/texmf-var-prebuilt \
+    fmtutil-sys --byfmt lualatex \
+ && chmod -R a+rX /opt/texmf-var-prebuilt
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
