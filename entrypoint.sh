@@ -69,4 +69,11 @@ if [ -d /etc/texmf ]; then
     cp -a /etc/texmf/. "${TARGET_DIR}/etc/texmf/"
 fi
 
+# Pre-built lualatex.fmt and associated cache, generated at image-build
+# time (see Dockerfile). Copied read-only into the volume; TEXMFVAR/
+# TEXMFCACHE in the consuming container point here, so mktexfmt is never
+# invoked at runtime.
+mkdir -p "${TARGET_DIR}/texmf-var-prebuilt"
+cp -a /opt/texmf-var-prebuilt/. "${TARGET_DIR}/texmf-var-prebuilt/"
+
 echo "TeX Live provisioning done."
