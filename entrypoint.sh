@@ -81,6 +81,37 @@ fi
 mkdir -p "${TARGET_DIR}/texmf-var-prebuilt"
 cp -a /opt/texmf-var-prebuilt/. "${TARGET_DIR}/texmf-var-prebuilt/"
 
+# Regenerating ls-R via mktexlsr has repeatedly proven unreliable in
+# this setup (missing entries for files that physically exist, and even
+# missing ls-R files for some trees entirely after copying). Rather than
+# continue chasing per-tree inconsistencies, we remove ALL ls-R files
+# unconditionally. kpathsea then falls back to a live directory scan for
+# every lookup - marginally slower per lookup, but always correct and
+# consistent with whatever is actually present under the mount, which
+# matters far more than raw lookup speed for this use case.
+echo "Removing ls-R filename databases to force live directory scans ..."
+find "${TARGET_DIR}/usr/share" -name "ls-R" -delete
+
+echo "TeX Live provisioning done."
+    mkdir -p "${TARGET_DIR}/usr/lib/texlive-libs"
+    cp -a "${MULTIARCH_DIR}/." "${TARGET_DIR}/usr/lib/texlive-libs/"
+else
+    echo "WARNING: could not detect multiarch lib directory - lualatex will likely fail to load shared libraries" >&2
+fi
+
+# System-wide texmf config, if present.
+if [ -d /etc/texmf ]; then
+    mkdir -p "${TARGET_DIR}/etc/texmf"
+    cp -a /etc/texmf/. "${TARGET_DIR}/etc/texmf/"
+fi
+
+# Pre-built lualatex.fmt and associated cache, generated at image-build
+# time (see Dockerfile). Copied read-only into the volume; TEXMFVAR in
+# the consuming container points here, so mktexfmt is never invoked at
+# runtime.
+mkdir -p "${TARGET_DIR}/texmf-var-prebuilt"
+cp -a /opt/texmf-var-prebuilt/. "${TARGET_DIR}/texmf-var-prebuilt/"
+
 # Regenerate the ls-R filename database against the *copied* files, so it
 # reflects the exact post-copy state instead of a stale build-time
 # snapshot. kpathsea (used both for classic file lookups like .fd files
