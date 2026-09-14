@@ -54,8 +54,11 @@ services:
       LD_LIBRARY_PATH: /opt/texlive-mounted/usr/lib/texlive-libs
       # Writable cache/format directory; lives inside the existing
       # opt_otobo volume, so no extra named volume is required.
-      TEXMFVAR: /opt/otobo/var/tmp/texlive-cache/texmf-var
-      TEXMFCACHE: /opt/otobo/var/tmp/texlive-cache
+      # Points at the pre-built format file from image-build time
+      # instead of a writable runtime cache - mktexfmt is never invoked,
+      # so PATH does not need to include the mounted TeX Live bin dir.
+      TEXMFVAR: /opt/texlive-mounted/texmf-var-prebuilt
+      TEXMFCACHE: /opt/texlive-mounted/texmf-var-prebuilt
 
   # Only needed if the process can also run asynchronously via the daemon
   # (e.g. a Generic Agent Job or event-based ticket process), not just
