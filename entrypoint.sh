@@ -81,15 +81,33 @@ fi
 mkdir -p "${TARGET_DIR}/texmf-var-prebuilt"
 cp -a /opt/texmf-var-prebuilt/. "${TARGET_DIR}/texmf-var-prebuilt/"
 
-# Regenerating ls-R via mktexlsr has repeatedly proven unreliable in
-# this setup (missing entries for files that physically exist, and even
-# missing ls-R files for some trees entirely after copying). Rather than
-# continue chasing per-tree inconsistencies, we remove ALL ls-R files
-# unconditionally. kpathsea then falls back to a live directory scan for
-# every lookup - marginally slower per lookup, but always correct and
-# consistent with whatever is actually present under the mount, which
-# matters far more than raw lookup speed for this use case.
-echo "Removing ls-R filename databases to force live directory scans ..."
-find "${TARGET_DIR}/usr/share" -name "ls-R" -delete
+# Build the ls-R filename database, one directory at a time.
+#
+# IMPORTANT: texmf.cnf marks several search trees (TEXMFDIST, TEXMFDEBIAN,
+# TEXMFSYSVAR, TEXMFLOCAL) with a "!!" prefix. In kpathsea, "!!" means
+# "use ls-R ONLY, do not fall back to a live directory scan if ls-R is
+# missing or incomplete". So, unlike a normal kpathsea path element,
+# simply deleting ls-R for these trees does NOT make kpathsea scan the
+# disk - it makes kpathsea treat the tree as having no files in it at
+# all. A valid, complete ls-R is therefore mandatory here, not optional.
+#
+# We call mktexlsr separately per directory (rather than passing several
+# directories in one call) and verify each one explicitly, because a
+# combined invocation can return success overall even when it silently
+# failed to write ls-R for one of the given directories.
+echo "Building ls-R filename databases ..."
+for d in \
+    "${TARGET_DIR}/usr/share/texlive/texmf-dist" \
+    "${TARGET_DIR}/usr/share/texmf" \
+    "${TARGET_DIR}/usr/share/texlive" \
+    "${TARGET_DIR}/usr/share/texmf-dist"; do
+    [ -d "$d" ] || continue
+    mktexlsr "$d" >/dev/null 2>&1
+    if [ -f "$d/ls-R" ]; then
+        echo "  ls-R OK: $d"
+    else
+        echo "WARNING: no ls-R could be built for $d - files under this tree will NOT be found at runtime (texmf.cnf marks it ls-R-only)" >&2
+    fi
+done
 
 echo "TeX Live provisioning done."
